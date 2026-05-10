@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>STEADYVIEW</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="sv-header">
+        <div class="sv-header-left">
+          <h1 class="sv-logo">STEADY<span>VIEW</span></h1>
+          <p class="sv-tagline">AI 기반 영상 복원 및 안정화 도구</p>
+        </div>
+      </header>
+
+      <section class="state-panel" id="statePanel" data-state="input">
+        <div class="state-view input-view" data-view="input">
+          <section class="upload-section">
+            <div class="sv-label">영상 업로드</div>
+            <label class="drop-zone" for="videoInput">
+              <input id="videoInput" type="file" accept=".mp4,.mov,.avi,video/mp4,video/quicktime,video/x-msvideo" />
+              <span class="upload-icon" aria-hidden="true">↑</span>
+              <span>MP4, MOV, AVI 파일을 끌어오거나 클릭해서 업로드하세요</span>
+            </label>
+            <div class="file-badge hidden" id="fileBadge">
+              <div class="file-icon">MP4</div>
+              <div class="file-info">
+                <div class="file-name" id="fileName"></div>
+                <div class="file-size" id="fileSize"></div>
+              </div>
+              <button class="remove-file-button" id="removeFileButton" type="button" aria-label="선택한 파일 제거">×</button>
+            </div>
+          </section>
+
+          <hr class="sv-divider" />
+
+          <section class="work-grid">
+            <div>
+              <div class="sv-label">복원 옵션</div>
+              <div class="option-list" role="group" aria-label="복원 옵션">
+                <label>
+                  <input type="checkbox" name="feature" value="Superresolution" />
+                  <span class="option-text">화질 개선</span>
+                  <span class="tooltip" tabindex="0" aria-label="저화질 영상의 노이즈를 줄이고 선명도를 AI로 향상합니다.">i</span>
+                </label>
+                <label>
+                  <input type="checkbox" name="feature" value="Stabilization" checked />
+                  <span class="option-text">떨림 보정</span>
+                  <span class="tooltip" tabindex="0" aria-label="카메라 흔들림을 분석해 부드러운 영상으로 안정화합니다.">i</span>
+                </label>
+                <label>
+                  <input type="checkbox" name="feature" value="Upright Correction" />
+                  <span class="option-text">수평 보정</span>
+                  <span class="tooltip" tabindex="0" aria-label="기울어진 영상의 수평선을 자동으로 맞춥니다.">i</span>
+                </label>
+              </div>
+              <button class="primary-button" id="processButton" type="button">복원 시작</button>
+            </div>
+
+            <div>
+              <div class="video-meta">
+                <span class="dot gray"></span>
+                <span id="previewLabel">원본 미리보기</span>
+              </div>
+              <div class="video-empty" id="emptyPreview">업로드한 영상 미리보기가 여기에 표시됩니다.</div>
+              <video class="video-player hidden" id="previewVideo" controls playsinline></video>
+            </div>
+          </section>
+        </div>
+
+        <div class="state-view processing-view hidden" data-view="processing">
+          <section class="progress-section" id="progressSection">
+            <div class="sv-label">처리 진행</div>
+            <div class="steps" id="steps"></div>
+            <div class="progress-meta">
+              <span id="progressLabel">준비 중...</span>
+              <span id="progressPct">0%</span>
+            </div>
+            <div class="progress-track"><div id="progressBar"></div></div>
+            <div class="progress-eta" id="progressEta">처리 단계를 준비 중입니다.</div>
+          </section>
+        </div>
+
+        <div class="state-view complete-view hidden" data-view="complete">
+          <section class="result-section" id="resultSection">
+            <div class="success">복원이 완료되었습니다. 원본과 복원 결과를 비교해보세요.</div>
+
+            <div class="result-grid">
+              <div>
+                <div class="video-meta"><span class="dot gray"></span><span>원본</span></div>
+                <video class="video-player" id="originalVideo" controls playsinline></video>
+              </div>
+              <div>
+                <div class="video-meta"><span class="dot blue"></span><span>복원 결과</span></div>
+                <video class="video-player" id="resultVideo" controls playsinline></video>
+              </div>
+            </div>
+
+            <div class="result-actions">
+              <button class="secondary-button" id="comparePlayButton" type="button" disabled>비교 영상 동시 재생</button>
+            </div>
+
+            <div class="completion-actions">
+              <button class="secondary-button" id="resetButton" type="button">새 영상 복원하기</button>
+              <a class="download-button" id="downloadLink">복원 영상 다운로드</a>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <div class="alert hidden" id="alertBox"></div>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

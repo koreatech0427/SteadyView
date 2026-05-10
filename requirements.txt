@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+python-multipart
+numpy
+scipy
+opencv-python-headless
+torch
+torchvision
+kornia
+tqdm
