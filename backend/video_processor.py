@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from backend.pipelines.stabilization import run_stabilization
+from backend.pipelines.superresolution import run_superresolution
 from backend.pipelines.upright_stabilization import run_upright_stabilization
 
 
@@ -105,45 +106,38 @@ def process_video(video_bytes: bytes, option: str, file_name: str) -> Processing
     output_name = str(Path(file_name).with_suffix(".mp4"))
     features = set(option.split(" + "))
 
-    if "Upright Correction" in features:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            suffix = Path(file_name).suffix.lower() or ".mp4"
-            input_path = temp_path / f"input{suffix}"
-            raw_output_path = temp_path / "upright_output.mp4"
-            input_path.write_bytes(video_bytes)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        suffix = Path(file_name).suffix.lower() or ".mp4"
+        current_path = temp_path / f"input{suffix}"
+        current_path.write_bytes(video_bytes)
 
+        if "Upright Correction" in features:
+            upright_output_path = temp_path / "upright_output.mp4"
             try:
-                run_upright_stabilization(str(input_path), str(raw_output_path))
+                run_upright_stabilization(str(current_path), str(upright_output_path))
             except Exception as exc:
                 raise VideoProcessingError(f"Stabilization + upright processing failed: {exc}") from exc
-
+            current_path = upright_output_path
+        elif "Stabilization" in features:
+            stabilized_output_path = temp_path / "stabilized_output.mp4"
             try:
-                playable_bytes = make_browser_playable(raw_output_path.read_bytes(), raw_output_path.name)
-            except VideoConversionError:
-                playable_bytes = raw_output_path.read_bytes()
-
-        return ProcessingResult(video_bytes=playable_bytes, option=option, file_name=output_name)
-
-    if "Stabilization" in features:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            suffix = Path(file_name).suffix.lower() or ".mp4"
-            input_path = temp_path / f"input{suffix}"
-            raw_output_path = temp_path / "stabilized_output.mp4"
-            input_path.write_bytes(video_bytes)
-
-            try:
-                run_stabilization(str(input_path), str(raw_output_path))
+                run_stabilization(str(current_path), str(stabilized_output_path))
             except Exception as exc:
                 raise VideoProcessingError(f"Stabilization processing failed: {exc}") from exc
+            current_path = stabilized_output_path
 
+        if "Superresolution" in features:
+            superresolution_output_path = temp_path / "superresolution_output.mp4"
             try:
-                playable_bytes = make_browser_playable(raw_output_path.read_bytes(), raw_output_path.name)
-            except VideoConversionError:
-                playable_bytes = raw_output_path.read_bytes()
+                run_superresolution(str(current_path), str(superresolution_output_path))
+            except Exception as exc:
+                raise VideoProcessingError(f"Superresolution processing failed: {exc}") from exc
+            current_path = superresolution_output_path
 
-        return ProcessingResult(video_bytes=playable_bytes, option=option, file_name=output_name)
+        try:
+            playable_bytes = make_browser_playable(current_path.read_bytes(), current_path.name)
+        except VideoConversionError:
+            playable_bytes = current_path.read_bytes()
 
-    playable_bytes = make_browser_playable(video_bytes, file_name)
     return ProcessingResult(video_bytes=playable_bytes, option=option, file_name=output_name)

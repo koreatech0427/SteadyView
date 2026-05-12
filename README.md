@@ -1,4 +1,4 @@
-# STEADYVIEW RealApp v2
+# STEADYVIEW
 
 FastAPI version of the STEADYVIEW video restoration service.
 
@@ -22,6 +22,17 @@ Then open:
 ```text
 http://localhost:8000
 ```
+
+## Team
+
+
+| 역할 | 이름 | 소속 |
+| --- | --- | --- |
+| 팀장 | 강혁 | 한국기술교육대학교 컴퓨터공학부 21학번 |
+| 팀원 | 이은호 | 한국기술교육대학교 컴퓨터공학부 21학번 |
+| 팀원 | 박은준 | 한국기술교육대학교 컴퓨터공학부 21학번 |
+| 팀원 | 김재인 | 한국기술교육대학교 컴퓨터공학부 23학번 |
+
 
 ## API
 
