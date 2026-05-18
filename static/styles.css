@@ -356,8 +356,8 @@ input {
   background: var(--hint);
 }
 
-.blue {
-  background: var(--accent);
+.green {
+  background: #22c55e;
 }
 
 .video-empty {

@@ -15,6 +15,19 @@ from config import (
 )
 from upright_model import infer_frame_angle
 
+_LOFTR_CACHE = {}
+
+
+def get_loftr_matcher(device):
+    cache_key = str(device)
+    matcher = _LOFTR_CACHE.get(cache_key)
+    if matcher is None:
+        if device.type == 'cuda':
+            torch.backends.cudnn.benchmark = True
+        matcher = LoFTR(pretrained='outdoor').to(device).eval()
+        _LOFTR_CACHE[cache_key] = matcher
+    return matcher
+
 
 def detect_scene_cut(prev_gray, curr_gray, threshold=SCENE_CUT_THRESHOLD):
     return float(np.mean(cv2.absdiff(prev_gray, curr_gray))) > threshold
@@ -60,7 +73,7 @@ def make_loftr_tensor(frame_bgr, new_w, new_h, device):
     return tensor.unsqueeze(0).unsqueeze(0).to(device)
 
 
-def analyze_video_shared(video_path, model, transform, device, mesh_size, demand):
+def analyze_video_shared(video_path, model, transform, device, mesh_size, demand, progress_callback=None):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise FileNotFoundError(f'Cannot open video: {video_path}')
@@ -75,11 +88,12 @@ def analyze_video_shared(video_path, model, transform, device, mesh_size, demand
 
     h, w = first_frame.shape[:2]
     scale = LOFTR_RESIZE_H / h
+    user_scale = scale
     new_h = (int(LOFTR_RESIZE_H) // 8) * 8
     new_w = (int(w * scale) // 8) * 8
 
     print('[Analyze] Initializing LoFTR...')
-    matcher = LoFTR(pretrained='outdoor').to(device).eval()
+    matcher = get_loftr_matcher(device)
 
     prev_gray_small = cv2.cvtColor(cv2.resize(first_frame, (new_w, new_h)), cv2.COLOR_BGR2GRAY)
     prev_tensor = make_loftr_tensor(first_frame, new_w, new_h, device)
@@ -94,6 +108,7 @@ def analyze_video_shared(video_path, model, transform, device, mesh_size, demand
     pbar_total = max(total_estimated - 1, 0) if total_estimated > 0 else None
     pbar = tqdm(total=pbar_total, desc='LoFTR + upright analysis', unit='frame')
 
+    processed_pairs = 0
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -104,7 +119,7 @@ def analyze_video_shared(video_path, model, transform, device, mesh_size, demand
         sigmas_sq.append(sigma_t)
 
         curr_tensor = make_loftr_tensor(frame, new_w, new_h, device)
-        with torch.no_grad():
+        with torch.inference_mode():
             correspondences = matcher({"image0": prev_tensor, "image1": curr_tensor})
 
         pa = correspondences['keypoints0'].cpu().numpy()
@@ -114,7 +129,6 @@ def analyze_video_shared(video_path, model, transform, device, mesh_size, demand
         pa = pa[good]
         pb = pb[good]
 
-        user_scale = scale
         if len(pa) > 0:
             pa[:, 0] *= (w * user_scale / new_w)
             pa[:, 1] *= (h * user_scale / new_h)
@@ -131,6 +145,10 @@ def analyze_video_shared(video_path, model, transform, device, mesh_size, demand
         prev_tensor = curr_tensor
         prev_gray_small = curr_gray_small
         pbar.update(1)
+        processed_pairs += 1
+        if progress_callback is not None and pbar_total:
+            percent = int(round(processed_pairs / pbar_total * 100))
+            progress_callback(min(percent, 100), f"영상 분석 중... {processed_pairs}/{pbar_total}프레임")
 
     pbar.close()
     cap.release()
@@ -153,4 +171,3 @@ def analyze_video_shared(video_path, model, transform, device, mesh_size, demand
         'n_frames': n_frames,
     }
     return theta_os, sigmas_sq, phis, rescaled_pairs, info
-

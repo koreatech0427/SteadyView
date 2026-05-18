@@ -6,7 +6,21 @@ import numpy as np
 import torch
 from kornia.feature import LoFTR
 
-def get_tracks(video_path, mesh_size, demand, n_frames):
+_LOFTR_CACHE = {}
+
+
+def _get_loftr_matcher(device):
+    cache_key = str(device)
+    matcher = _LOFTR_CACHE.get(cache_key)
+    if matcher is None:
+        if device.type == "cuda":
+            torch.backends.cudnn.benchmark = True
+        matcher = LoFTR(pretrained='outdoor').to(device).eval()
+        _LOFTR_CACHE[cache_key] = matcher
+    return matcher
+
+
+def get_tracks(video_path, mesh_size, demand, n_frames, progress_callback=None):
     cap = cv2.VideoCapture(video_path)
     ret, first_frame = cap.read()
     if not ret: return None, "영상 로드 실패"
@@ -22,7 +36,7 @@ def get_tracks(video_path, mesh_size, demand, n_frames):
 
     # PyTorch GPU 및 사전 학습된 LoFTR 모델 로드 (최초 실행 시 가중치 자동 다운로드)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    matcher = LoFTR(pretrained='outdoor').to(device).eval()
+    matcher = _get_loftr_matcher(device)
 
     def preprocess(frame):
         # 1. 크기 조절 및 흑백 변환
@@ -43,7 +57,7 @@ def get_tracks(video_path, mesh_size, demand, n_frames):
         curr_tensor = preprocess(frame)
 
         # ✨ [딥러닝 추론] 두 이미지를 넣고 특징점 좌표 쌍을 뽑아냅니다.
-        with torch.no_grad():
+        with torch.inference_mode():
             input_dict = {"image0": prev_tensor, "image1": curr_tensor}
             correspondences = matcher(input_dict)
 
@@ -65,6 +79,9 @@ def get_tracks(video_path, mesh_size, demand, n_frames):
 
         all_matched_pairs.append((pa, pb))
         prev_tensor = curr_tensor
+        if progress_callback is not None and n_frames > 1:
+            percent = int(round(i / (n_frames - 1) * 100))
+            progress_callback(min(percent, 100), f"특징점 추적 중... {i}/{n_frames - 1}프레임")
 
         print(f"✨ LoFTR 딥러닝 특징점 추적 중... {i}/{n_frames} (찾은 매칭 수: {len(pa)}개)", end='\r')
 

@@ -50,7 +50,7 @@ is wired to `backend/pipelines/upright_stabilization`.
 Put the upright model checkpoint here:
 
 ```text
-backend/pipelines/upright_stabilization/models/best_model_eff_b0_bright_global7_residual_fusion_real_best.pth
+backend/pipelines/upright_stabilization/models/best_stage2_true_hybrid_real_best.pth
 ```
 
 Or set a custom path in PowerShell before running the server:
@@ -69,4 +69,17 @@ Then open:
 
 ```text
 http://localhost:8000
+```
+
+For `Superresolution` or combined options that include it, Docker mounts
+Real-ESRGAN from:
+
+```text
+C:\Users\korea\Desktop\Real-ESRGAN\Real-ESRGAN_V2
+```
+
+If it lives elsewhere, set this before `docker compose up`:
+
+```powershell
+$env:STEADYVIEW_REAL_ESRGAN_HOST_DIR="C:\path\to\Real-ESRGAN_V2"
 ```

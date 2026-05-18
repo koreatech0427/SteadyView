@@ -14,10 +14,35 @@ LOCAL_MODULES = {
 }
 
 
-def run_stabilization(input_path: str, output_path: str) -> None:
-    """Run the stabilization-only pipeline on a video file."""
+def _drop_foreign_modules() -> None:
+    pipeline_path = PIPELINE_DIR.resolve()
     for module_name in LOCAL_MODULES:
-        sys.modules.pop(module_name, None)
+        module = sys.modules.get(module_name)
+        module_file = getattr(module, "__file__", None)
+        if module_file is None:
+            sys.modules.pop(module_name, None)
+            continue
+
+        try:
+            Path(module_file).resolve().relative_to(pipeline_path)
+        except ValueError:
+            sys.modules.pop(module_name, None)
+
+
+def run_stabilization(input_path: str, output_path: str, progress_callback=None) -> None:
+    """Run the stabilization-only pipeline on a video file."""
+    def report(progress: int, message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(progress, message)
+
+    def map_progress(start: int, end: int):
+        def mapped(percent: int, message: str) -> None:
+            bounded = max(0, min(int(percent), 100))
+            report(start + round((end - start) * (bounded / 100)), message)
+
+        return mapped
+
+    _drop_foreign_modules()
 
     pipeline_path = str(PIPELINE_DIR)
     if pipeline_path in sys.path:
@@ -38,12 +63,19 @@ def run_stabilization(input_path: str, output_path: str) -> None:
         device = "cpu"
 
     print(f"Steady View pipeline started. (Stabilization Only, device={device})")
+    report(1, "흔들림 보정을 준비하고 있습니다.")
 
     n_frames = get_actual_frame_count(input_path)
     mesh_size = 16
     demand = 1024
 
-    matched_pairs, info = get_tracks(input_path, mesh_size, demand, n_frames)
+    matched_pairs, info = get_tracks(
+        input_path,
+        mesh_size,
+        demand,
+        n_frames,
+        progress_callback=map_progress(5, 55),
+    )
     if not matched_pairs:
         raise RuntimeError("Feature tracking failed.")
 
@@ -58,7 +90,9 @@ def run_stabilization(input_path: str, output_path: str) -> None:
     ]
 
     sigma = min(16, n_frames // 5)
+    report(62, "카메라 경로를 계산하고 있습니다.")
     camera_path = get_path(mesh_size, rescaled_pairs, info)
+    report(70, "흔들림 경로를 부드럽게 보정하고 있습니다.")
     smoothed = smooth_path(camera_path, sigma=sigma)
 
     render_combined_video(
@@ -69,6 +103,8 @@ def run_stabilization(input_path: str, output_path: str) -> None:
         info,
         None,
         device,
+        progress_callback=map_progress(75, 100),
     )
 
+    report(100, "흔들림 보정이 완료되었습니다.")
     print("Steady View pipeline finished. (Stabilization Only)")

@@ -15,6 +15,9 @@ env/
 .ruff_cache/
 
 *.log
+jobs/
+debug_frames/
+LOCAL_CHANGE_SUMMARY.md
 
 # Large ML/model artifacts
 *.pth

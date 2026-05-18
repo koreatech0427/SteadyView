@@ -17,11 +17,13 @@ def render_combined_video(
     device,
     crop_ratio=0.12,
     alpha=0.04,
+    progress_callback=None,
 ):
     cap = cv2.VideoCapture(video_path)
     n_frames, mesh_rows, mesh_cols, _, _ = camera_path.shape
     h, w = info["height"], info["width"]
     q_h, q_w = h // mesh_rows, w // mesh_cols
+    smooth_inv_path = np.linalg.pinv(smooth_path)
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
@@ -39,8 +41,7 @@ def render_combined_video(
         ]
 
         for cx, cy, grid_col, grid_row in corners:
-            inv_smooth = np.linalg.pinv(smooth_path[frame_idx, grid_row, grid_col])
-            warp_h = np.matmul(camera_path[frame_idx, grid_row, grid_col], inv_smooth)
+            warp_h = np.matmul(camera_path[frame_idx, grid_row, grid_col], smooth_inv_path[frame_idx, grid_row, grid_col])
             forward_h = np.linalg.pinv(warp_h)
             point = np.array([cx, cy, 1.0])
             mapped = np.matmul(forward_h, point)
@@ -87,8 +88,7 @@ def render_combined_video(
                 grid_row = min(row, mesh_rows - 1)
                 grid_col = min(col, mesh_cols - 1)
 
-                inv_smooth = np.linalg.pinv(smooth_path[frame_idx, grid_row, grid_col])
-                warp_h = np.matmul(camera_path[frame_idx, grid_row, grid_col], inv_smooth)
+                warp_h = np.matmul(camera_path[frame_idx, grid_row, grid_col], smooth_inv_path[frame_idx, grid_row, grid_col])
                 combined_h = np.matmul(r_upright, warp_h)
 
                 point = np.array([src_x[row, col], src_y[row, col], 1.0])
@@ -114,6 +114,10 @@ def render_combined_video(
         out.write(final_frame)
 
         print(f"Progress: {frame_idx + 1}/{n_frames}", end="\r")
+        if progress_callback is not None:
+            rendered = frame_idx + 1
+            percent = int(round(rendered / n_frames * 100))
+            progress_callback(min(percent, 100), f"결과 영상 렌더링 중... {rendered}/{n_frames}프레임")
 
     cap.release()
     out.release()

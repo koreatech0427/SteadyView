@@ -6,6 +6,8 @@ from torchvision import models, transforms
 
 from config import INPUT_SIZE, MIN_SIGMA_SQ, PATCH_CROP_RATIO
 
+_UPRIGHT_MODEL_CACHE = {}
+
 
 class GlobalLocalResidualFusionNet(nn.Module):
     def __init__(self, proj_dim=256, num_local=7):
@@ -141,9 +143,14 @@ def infer_frame_angle(model, frame_bgr, transform, device):
 
 
 def load_upright_model(model_path, device):
+    cache_key = (str(model_path), str(device))
+    cached = _UPRIGHT_MODEL_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     model = GlobalLocalResidualFusionNet().to(device)
     ckpt = torch.load(model_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt['model_state_dict'], strict=True)
     model.eval()
+    _UPRIGHT_MODEL_CACHE[cache_key] = model
     return model
-

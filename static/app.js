@@ -26,12 +26,27 @@ const featureCheckboxes = Array.from(document.querySelectorAll("input[name='feat
 let selectedFile = null;
 let previewUrl = null;
 let resultUrl = null;
+let activeJobId = null;
+let pollingTimer = null;
 let progressTimer = null;
+let displayedProgress = 0;
+let processStartedAt = null;
+let previewFallbackTimer = null;
 let comparePlaying = false;
 let syncingComparison = false;
 
 const featureOrder = ["Superresolution", "Stabilization", "Upright Correction"];
+/*
+const displayStepLabels = ["업로드 준비", "보정 처리", "초해상도 처리", "결과 정리"];
 const stepLabels = ["영상 분석", "프레임 추출", "AI 모델 적용", "영상 보정"];
+
+*/
+const stepLabels = [
+  "\uc5c5\ub85c\ub4dc \uc900\ube44",
+  "\ubcf4\uc815 \ucc98\ub9ac",
+  "\ucd08\ud574\uc0c1\ub3c4 \ucc98\ub9ac",
+  "\uacb0\uacfc \uc815\ub9ac",
+];
 
 setUiState("input");
 
@@ -92,10 +107,11 @@ processButton.addEventListener("click", async () => {
 
   setUiState("processing");
   setBusy(true);
+  processStartedAt = Date.now();
   startProgress();
 
   try {
-    const response = await fetch("/api/process", {
+    const response = await fetch("/api/jobs", {
       method: "POST",
       body: formData,
     });
@@ -104,15 +120,16 @@ processButton.addEventListener("click", async () => {
       throw new Error(await readError(response));
     }
 
-    const resultBlob = await response.blob();
-    finishProgress();
-    setResult(resultBlob, selectedFile.name);
+    const job = await response.json();
+    activeJobId = job.id;
+    updateProgress(job.progress || 0, job.message);
+    pollJob(activeJobId);
   } catch (error) {
+    stopPolling();
     stopProgress();
     setUiState("input");
-    showAlert(error.message);
-  } finally {
     setBusy(false);
+    showAlert(error.message);
   }
 });
 
@@ -169,6 +186,15 @@ async function handleFile(file) {
   fileName.textContent = file.name;
   fileSize.textContent = `${(file.size / 1024 / 1024).toFixed(1)} MB`;
 
+  setPreview(file);
+  scheduleServerPreviewFallback(file);
+}
+
+async function loadServerPreview(file) {
+  if (file !== selectedFile) {
+    return;
+  }
+
   const formData = new FormData();
   formData.append("file", file);
 
@@ -183,10 +209,36 @@ async function handleFile(file) {
     }
 
     const previewBlob = await response.blob();
-    setPreview(previewBlob);
+    if (file === selectedFile) {
+      setPreview(previewBlob);
+    }
   } catch (error) {
-    showAlert(error.message);
-    setPreview(file);
+    if (file === selectedFile) {
+      showAlert(error.message);
+    }
+  }
+}
+
+function scheduleServerPreviewFallback(file) {
+  clearPreviewFallback();
+
+  const needsConversion = !file.type.includes("mp4") && !file.name.toLowerCase().endsWith(".mp4");
+  if (needsConversion) {
+    loadServerPreview(file);
+    return;
+  }
+
+  previewFallbackTimer = window.setTimeout(() => {
+    if (file === selectedFile && previewVideo.readyState < HTMLMediaElement.HAVE_METADATA) {
+      loadServerPreview(file);
+    }
+  }, 1200);
+}
+
+function clearPreviewFallback() {
+  if (previewFallbackTimer) {
+    window.clearTimeout(previewFallbackTimer);
+    previewFallbackTimer = null;
   }
 }
 
@@ -209,12 +261,14 @@ function setPreview(blob) {
   updateCompareButton();
 }
 
-function setResult(blob, sourceName) {
+function setResult(url, sourceName) {
   if (resultUrl) {
-    URL.revokeObjectURL(resultUrl);
+    if (resultUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(resultUrl);
+    }
   }
   const outputName = `steadyview_${sourceName.replace(/\.[^.]+$/, ".mp4")}`;
-  resultUrl = URL.createObjectURL(blob);
+  resultUrl = url;
   resultVideo.src = resultUrl;
   downloadLink.href = resultUrl;
   downloadLink.download = outputName;
@@ -225,9 +279,14 @@ function setResult(blob, sourceName) {
 
 function clearResult() {
   pauseComparison();
+  stopPolling();
   stopProgress();
+  activeJobId = null;
+  processStartedAt = null;
   if (resultUrl) {
-    URL.revokeObjectURL(resultUrl);
+    if (resultUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(resultUrl);
+    }
     resultUrl = null;
   }
   resultVideo.removeAttribute("src");
@@ -236,6 +295,7 @@ function clearResult() {
 
 function resetSelectedFile() {
   clearResult();
+  clearPreviewFallback();
   selectedFile = null;
   videoInput.value = "";
   fileBadge.classList.add("hidden");
@@ -298,20 +358,78 @@ function updateCompareButton() {
   comparePlayButton.textContent = comparePlaying ? "비교 영상 일시정지" : "비교 영상 동시 재생";
 }
 
-function startProgress() {
-  stopProgress();
-  renderSteps(0);
-  updateProgress(0);
-  let percent = 0;
-  progressTimer = window.setInterval(() => {
-    percent = Math.min(percent + 4, 92);
-    updateProgress(percent);
-  }, 180);
+async function pollJob(jobId) {
+  stopPolling();
+
+  const check = async () => {
+    try {
+      const response = await fetch(`/api/jobs/${jobId}`, { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(await readError(response));
+      }
+
+      const job = await response.json();
+      if (job.id !== activeJobId) {
+        return;
+      }
+
+      updateProgress(job.progress || displayedProgress, job.message);
+
+      if (job.status === "done") {
+        stopPolling();
+        finishProgress(job.message);
+        await loadJobResult(job.id);
+        setBusy(false);
+        return;
+      }
+
+      if (job.status === "failed") {
+        throw new Error(job.message || "영상 처리에 실패했습니다.");
+      }
+    } catch (error) {
+      stopPolling();
+      stopProgress();
+      activeJobId = null;
+      setUiState("input");
+      setBusy(false);
+      showAlert(error.message);
+    }
+  };
+
+  await check();
+  if (activeJobId === jobId) {
+    pollingTimer = window.setInterval(check, 1500);
+  }
 }
 
-function finishProgress() {
+async function loadJobResult(jobId) {
+  const resultUrl = `/api/jobs/${jobId}/result`;
+  const response = await fetch(resultUrl, { method: "HEAD", cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  setResult(resultUrl, selectedFile.name);
+  activeJobId = null;
+}
+
+function stopPolling() {
+  if (pollingTimer) {
+    window.clearInterval(pollingTimer);
+    pollingTimer = null;
+  }
+}
+
+function startProgress() {
   stopProgress();
-  updateProgress(100);
+  displayedProgress = 0;
+  renderSteps(0);
+  updateProgress(0);
+}
+
+function finishProgress(message) {
+  stopProgress();
+  updateProgress(100, message);
 }
 
 function stopProgress() {
@@ -321,13 +439,41 @@ function stopProgress() {
   }
 }
 
-function updateProgress(percent) {
-  const phase = Math.min(Math.floor(percent / 25), 3);
+function updateProgress(percent, message) {
+  displayedProgress = Math.max(displayedProgress, Number(percent) || 0);
+  const visiblePercent = Math.min(displayedProgress, 100);
+  const phase = Math.min(Math.floor(visiblePercent / 25), 3);
   renderSteps(phase);
-  progressBar.style.width = `${percent}%`;
-  progressPct.textContent = `${percent}%`;
-  progressLabel.textContent = percent === 100 ? "완료" : `${stepLabels[phase]} 중...`;
-  progressEta.textContent = percent === 100 ? "완료" : "처리 중입니다. 잠시만 기다려주세요.";
+  progressBar.style.width = `${visiblePercent}%`;
+  progressPct.textContent = `${visiblePercent}%`;
+  progressLabel.textContent = visiblePercent === 100 ? "\uc644\ub8cc" : `${stepLabels[phase]}...`;
+  progressEta.textContent = buildProgressDetail(visiblePercent, message);
+}
+
+function buildProgressDetail(percent, message) {
+  if (percent >= 100) {
+    return message || "\uc644\ub8cc\ub418\uc5c8\uc2b5\ub2c8\ub2e4.";
+  }
+
+  if (!processStartedAt || percent < 5) {
+    return message || "\ucc98\ub9ac \uc900\ube44 \uc911\uc785\ub2c8\ub2e4.";
+  }
+
+  const elapsedSeconds = Math.max((Date.now() - processStartedAt) / 1000, 1);
+  const totalSeconds = Math.round(elapsedSeconds / (percent / 100));
+  const remainingSeconds = Math.max(totalSeconds - Math.round(elapsedSeconds), 0);
+  const timeText = `\uc608\uc0c1 \ucd1d \uc18c\uc694 ${formatDuration(totalSeconds)} · \ub0a8\uc740 \uc2dc\uac04 ${formatDuration(remainingSeconds)}`;
+  return message ? `${message} ${timeText}` : timeText;
+}
+
+function formatDuration(totalSeconds) {
+  const seconds = Math.max(Math.round(totalSeconds), 0);
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  if (minutes <= 0) {
+    return `${remainder}\ucd08`;
+  }
+  return `${minutes}\ubd84 ${remainder}\ucd08`;
 }
 
 function renderSteps(doneThrough) {
@@ -373,3 +519,4 @@ async function readError(response) {
     return "요청에 실패했습니다.";
   }
 }
+
