@@ -4,6 +4,14 @@ from scipy.ndimage import binary_erosion
 from tqdm import tqdm
 
 
+# 크롭 비율 조정 위치:
+# 1) AUTO_CROP_ARTIFACT_MARGIN_RATIO를 키우면 자동 크롭이 더 안쪽으로 들어가 검은 테두리/외곽 왜곡이 줄지만 화면이 더 확대됩니다.
+# 2) RENDER_EXTRA_GUARD_RATIO를 키우면 렌더 직후 한 번 더 가장자리를 잘라 외곽 보간 흔적을 숨기지만 화면이 더 확대됩니다.
+# 3) crop_border_margin(main.py에서 전달)을 키우면 기본 안전 여백이 늘지만, 아래 두 값보다 영향이 작습니다.
+AUTO_CROP_ARTIFACT_MARGIN_RATIO = 0.12
+RENDER_EXTRA_GUARD_RATIO = 0.038
+
+
 def compute_joint_source_map(rot_h, joint_camera_t, joint_stable_t, out_width, out_height,
                              full_width=None, full_height=None, crop_x1=0, crop_y1=0,
                              coord_width=None, coord_height=None, joint_stable_inv_t=None):
@@ -95,8 +103,8 @@ def compute_auto_crop_box(rot_mats, joint_camera_path, joint_stable_path, video_
     sx, sy = w / float(eval_w), h / float(eval_h)
     margin_x = int(np.ceil(w * border_margin))
     margin_y = int(np.ceil(h * border_margin))
-    artifact_margin_x = max(margin_x, int(np.ceil(w * 0.10)))
-    artifact_margin_y = max(margin_y, int(np.ceil(h * 0.10)))
+    artifact_margin_x = max(margin_x, int(np.ceil(w * AUTO_CROP_ARTIFACT_MARGIN_RATIO)))
+    artifact_margin_y = max(margin_y, int(np.ceil(h * AUTO_CROP_ARTIFACT_MARGIN_RATIO)))
 
     x1 = max(0, int(np.floor(xs.min() * sx)) + artifact_margin_x)
     x2 = min(w, int(np.ceil((xs.max() + 1) * sx)) - artifact_margin_x)
@@ -215,8 +223,8 @@ def render_joint_video(video_path, output_path, rot_mats, joint_camera_path, joi
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=(0, 0, 0),
         )
-        guard_x = max(2, int(round(cropped.shape[1] * 0.035)))
-        guard_y = max(2, int(round(cropped.shape[0] * 0.035)))
+        guard_x = max(2, int(round(cropped.shape[1] * RENDER_EXTRA_GUARD_RATIO)))
+        guard_y = max(2, int(round(cropped.shape[0] * RENDER_EXTRA_GUARD_RATIO)))
         if cropped.shape[1] > guard_x * 2 and cropped.shape[0] > guard_y * 2:
             cropped = cropped[guard_y:cropped.shape[0] - guard_y, guard_x:cropped.shape[1] - guard_x]
         guard_h, guard_w = cropped.shape[:2]

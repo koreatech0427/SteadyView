@@ -46,6 +46,11 @@ STABILIZED_FINAL_SMOOTH_ALPHA = 0.12
 CROP_SAMPLE_STEP = 1
 CROP_ERODE_ITER = 5
 CROP_EVAL_SCALE = 0.5
+
+# Upright-only 크롭 비율 조정 위치:
+# CROP_BORDER_MARGIN은 기본 안전 여백입니다.
+# CROP_ARTIFACT_MARGIN을 키우면 검은 테두리/외곽 왜곡은 줄지만 화면이 더 확대됩니다.
+# 렌더 단계의 guard_x/guard_y 비율(아래 render_upright_video의 0.035)도 추가 확대에 영향을 줍니다.
 CROP_BORDER_MARGIN = 0.02
 CROP_ARTIFACT_MARGIN = 0.10
 
@@ -569,6 +574,7 @@ def render_upright_video(video_path, output_path, angles, info, auto_crop=True,
             )
 
             cropped = corrected[y1:y2, x1:x2]
+            # 렌더 후 외곽 보간 흔적을 숨기는 추가 크롭입니다. 값을 키우면 더 확대됩니다.
             guard_x = max(2, int(round(cropped.shape[1] * 0.035)))
             guard_y = max(2, int(round(cropped.shape[0] * 0.035)))
             if cropped.shape[1] > guard_x * 2 and cropped.shape[0] > guard_y * 2:

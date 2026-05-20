@@ -20,6 +20,7 @@ from backend.video_processor import (
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 JOBS_DIR = BASE_DIR / "jobs"
+UPLOADS_DIR = BASE_DIR / "uploads"
 UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi"}
@@ -39,6 +40,11 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 jobs_lock = threading.Lock()
 jobs: dict[str, dict[str, object]] = {}
 JOBS_DIR.mkdir(exist_ok=True)
+UPLOADS_DIR.mkdir(exist_ok=True)
+
+
+class JobCancelled(RuntimeError):
+    pass
 
 
 @app.middleware("http")
@@ -120,6 +126,111 @@ async def create_job(
     input_path = job_dir / f"input{Path(file_name).suffix.lower()}"
     await _save_upload_file(file, input_path)
 
+    return _start_job(job_id, input_path, option, file_name)
+
+
+@app.post("/api/uploads", status_code=202)
+def create_chunked_upload(
+    file_name: str = Form(...),
+    file_size: int = Form(...),
+    total_chunks: int = Form(...),
+) -> dict[str, object]:
+    clean_name = _validate_video_file(file_name)
+    if file_size <= 0 or total_chunks <= 0:
+        raise HTTPException(status_code=400, detail="업로드 정보가 올바르지 않습니다.")
+
+    upload_id = uuid4().hex
+    upload_dir = UPLOADS_DIR / upload_id
+    parts_dir = upload_dir / "parts"
+    parts_dir.mkdir(parents=True, exist_ok=False)
+
+    upload = {
+        "id": upload_id,
+        "file_name": clean_name,
+        "file_size": file_size,
+        "total_chunks": total_chunks,
+        "received_chunks": [],
+        "created_at": _utc_now(),
+        "updated_at": _utc_now(),
+    }
+    _save_upload(upload_id, upload)
+    return {
+        "id": upload_id,
+        "file_name": clean_name,
+        "file_size": file_size,
+        "total_chunks": total_chunks,
+    }
+
+
+@app.post("/api/uploads/{upload_id}/chunks")
+async def upload_chunk(
+    upload_id: str,
+    chunk_index: int = Form(...),
+    chunk: UploadFile = File(...),
+) -> dict[str, object]:
+    upload = _get_upload_or_404(upload_id)
+    total_chunks = int(upload["total_chunks"])
+    if chunk_index < 0 or chunk_index >= total_chunks:
+        raise HTTPException(status_code=400, detail="청크 번호가 올바르지 않습니다.")
+
+    parts_dir = UPLOADS_DIR / upload_id / "parts"
+    parts_dir.mkdir(parents=True, exist_ok=True)
+    part_path = parts_dir / f"{chunk_index:08d}.part"
+    await _save_upload_file(chunk, part_path)
+
+    received = set(int(index) for index in upload.get("received_chunks", []))
+    received.add(chunk_index)
+    upload["received_chunks"] = sorted(received)
+    upload["updated_at"] = _utc_now()
+    _save_upload(upload_id, upload)
+
+    return {
+        "id": upload_id,
+        "received_chunks": len(received),
+        "total_chunks": total_chunks,
+    }
+
+
+@app.post("/api/uploads/{upload_id}/complete", status_code=202)
+def complete_chunked_upload(
+    upload_id: str,
+    option: str = Form(...),
+) -> dict[str, object]:
+    if option not in RESTORATION_OPTIONS:
+        raise HTTPException(status_code=400, detail="지원하지 않는 복원 옵션입니다.")
+
+    upload = _get_upload_or_404(upload_id)
+    file_name = str(upload["file_name"])
+    total_chunks = int(upload["total_chunks"])
+    received = set(int(index) for index in upload.get("received_chunks", []))
+    missing = [index for index in range(total_chunks) if index not in received]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"업로드되지 않은 청크가 있습니다: {missing[:5]}")
+
+    job_id = uuid4().hex
+    job_dir = JOBS_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=False)
+    input_path = job_dir / f"input{Path(file_name).suffix.lower()}"
+
+    parts_dir = UPLOADS_DIR / upload_id / "parts"
+    with input_path.open("wb") as output:
+        for index in range(total_chunks):
+            part_path = parts_dir / f"{index:08d}.part"
+            if not part_path.exists():
+                raise HTTPException(status_code=400, detail=f"청크 파일을 찾을 수 없습니다: {index}")
+            with part_path.open("rb") as part:
+                while data := part.read(UPLOAD_CHUNK_SIZE):
+                    output.write(data)
+
+    if input_path.stat().st_size != int(upload["file_size"]):
+        input_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="업로드된 파일 크기가 원본과 다릅니다.")
+
+    _delete_upload(upload_id)
+    return _start_job(job_id, input_path, option, file_name)
+
+
+def _start_job(job_id: str, input_path: Path, option: str, file_name: str) -> dict[str, object]:
     job = {
         "id": job_id,
         "status": "queued",
@@ -128,6 +239,7 @@ async def create_job(
         "option": option,
         "source_name": file_name,
         "result_name": f"steadyview_{Path(file_name).with_suffix('.mp4').name}",
+        "cancel_requested": False,
         "created_at": _utc_now(),
         "updated_at": _utc_now(),
     }
@@ -145,6 +257,21 @@ async def create_job(
 
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str) -> dict[str, object]:
+    return _public_job(_get_job_or_404(job_id))
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str) -> dict[str, object]:
+    job = _get_job_or_404(job_id)
+    if job["status"] in {"done", "failed", "cancelled"}:
+        return _public_job(job)
+
+    _update_job(
+        job_id,
+        status="cancelling",
+        cancel_requested=True,
+        message="처리 중단 요청을 보냈습니다.",
+    )
     return _public_job(_get_job_or_404(job_id))
 
 
@@ -213,10 +340,16 @@ def _run_job(job_id: str, input_path: Path, option: str, file_name: str) -> None
     _update_job(job_id, status="running", progress=5, message="영상 처리를 시작했습니다.")
     try:
         def report(progress: int, message: str) -> None:
+            if _is_cancel_requested(job_id):
+                raise JobCancelled("JobCancelled")
             _update_job(job_id, status="running", progress=progress, message=message)
 
         result_path = JOBS_DIR / job_id / "output.mp4"
+        if _is_cancel_requested(job_id):
+            raise JobCancelled("JobCancelled")
         result = process_video_file(input_path, option, file_name, result_path, progress_callback=report)
+        if _is_cancel_requested(job_id):
+            raise JobCancelled("JobCancelled")
         _update_job(
             job_id,
             status="done",
@@ -224,9 +357,20 @@ def _run_job(job_id: str, input_path: Path, option: str, file_name: str) -> None
             message="영상 처리가 완료되었습니다.",
             result_name=f"steadyview_{result.file_name}",
         )
+    except JobCancelled:
+        _delete_partial_result(job_id)
+        _update_job(job_id, status="cancelled", progress=100, message="영상 처리를 중단했습니다.")
     except (VideoConversionError, VideoProcessingError) as exc:
+        if _is_cancel_requested(job_id) or "JobCancelled" in str(exc):
+            _delete_partial_result(job_id)
+            _update_job(job_id, status="cancelled", progress=100, message="영상 처리를 중단했습니다.")
+            return
         _update_job(job_id, status="failed", progress=100, message=_user_error_message(exc))
     except Exception as exc:
+        if _is_cancel_requested(job_id):
+            _delete_partial_result(job_id)
+            _update_job(job_id, status="cancelled", progress=100, message="영상 처리를 중단했습니다.")
+            return
         _update_job(job_id, status="failed", progress=100, message=_user_error_message(exc))
 
 
@@ -254,6 +398,36 @@ def _save_job(job_id: str, job: dict[str, object]) -> None:
         status_path.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _save_upload(upload_id: str, upload: dict[str, object]) -> None:
+    upload_dir = UPLOADS_DIR / upload_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    status_path = upload_dir / "upload.json"
+    status_path.write_text(json.dumps(upload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _get_upload_or_404(upload_id: str) -> dict[str, object]:
+    status_path = UPLOADS_DIR / upload_id / "upload.json"
+    if not status_path.exists():
+        raise HTTPException(status_code=404, detail="업로드 세션을 찾을 수 없습니다.")
+
+    try:
+        return json.loads(status_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="업로드 상태 파일을 읽을 수 없습니다.") from exc
+
+
+def _delete_upload(upload_id: str) -> None:
+    upload_dir = UPLOADS_DIR / upload_id
+    if not upload_dir.exists():
+        return
+    for path in upload_dir.rglob("*"):
+        if path.is_file():
+            path.unlink()
+    for path in sorted((path for path in upload_dir.rglob("*") if path.is_dir()), reverse=True):
+        path.rmdir()
+    upload_dir.rmdir()
+
+
 def _get_job_or_404(job_id: str) -> dict[str, object]:
     with jobs_lock:
         job = jobs.get(job_id)
@@ -274,6 +448,28 @@ def _get_job_or_404(job_id: str) -> dict[str, object]:
     return dict(job)
 
 
+def _is_cancel_requested(job_id: str) -> bool:
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if job is not None:
+            return bool(job.get("cancel_requested"))
+
+    status_path = JOBS_DIR / job_id / "status.json"
+    if not status_path.exists():
+        return False
+    try:
+        job = json.loads(status_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False
+    return bool(job.get("cancel_requested"))
+
+
+def _delete_partial_result(job_id: str) -> None:
+    result_path = JOBS_DIR / job_id / "output.mp4"
+    if result_path.exists():
+        result_path.unlink()
+
+
 def _public_job(job: dict[str, object]) -> dict[str, object]:
     return {
         "id": job["id"],
@@ -283,6 +479,7 @@ def _public_job(job: dict[str, object]) -> dict[str, object]:
         "option": job["option"],
         "source_name": job["source_name"],
         "result_name": job["result_name"],
+        "cancel_requested": bool(job.get("cancel_requested", False)),
         "created_at": job["created_at"],
         "updated_at": job["updated_at"],
     }

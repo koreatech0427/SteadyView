@@ -16,6 +16,7 @@ env/
 
 *.log
 jobs/
+uploads/
 debug_frames/
 LOCAL_CHANGE_SUMMARY.md
 

@@ -26,6 +26,8 @@ def run_pipeline(video_path, model_path, output_path,
                  crop_sample_step=2,
                  crop_erode_iter=5,
                  crop_eval_scale=0.5,
+                 # 기본 안전 여백입니다. 실제 체감 크롭은 render.py의 AUTO_CROP_ARTIFACT_MARGIN_RATIO,
+                 # RENDER_EXTRA_GUARD_RATIO가 더 크게 좌우합니다.
                  crop_border_margin=0.02,
                  progress_callback=None):
     def report(progress, message):
