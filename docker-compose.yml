@@ -7,9 +7,9 @@ services:
       - "8000:8000"
     volumes:
       - .:/app
-      - ${STEADYVIEW_REAL_ESRGAN_HOST_DIR:-C:/Users/korea/Desktop/Real-ESRGAN/Real-ESRGAN_V2}:/opt/real-esrgan:ro
+      - ${STEADYVIEW_BASICVSRPP_HOST_DIR:-C:/Users/korea/Desktop/BasicVSR++}:/opt/basicvsrpp:ro
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - STEADYVIEW_REAL_ESRGAN_DIR=/opt/real-esrgan
+      - STEADYVIEW_BASICVSRPP_DIR=/opt/basicvsrpp
     command: uvicorn app:app --host 0.0.0.0 --port 8000 --reload
