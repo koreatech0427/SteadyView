@@ -1,3 +1,4 @@
+import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ class VideoProcessingError(RuntimeError):
 
 
 ProgressCallback = Callable[[int, str], None]
+CancelCallback = Callable[[], bool]
 FFMPEG_FALLBACK = Path(r"C:\ffmpeg_SR\bin\ffmpeg.exe")
 FFPROBE_FALLBACK = Path(r"C:\ffmpeg_SR\bin\ffprobe.exe")
 
@@ -113,6 +115,7 @@ def process_video(
     option: str,
     file_name: str,
     progress_callback: ProgressCallback | None = None,
+    cancel_callback: CancelCallback | None = None,
 ) -> ProcessingResult:
     """Process a video and return the restored bytes.
 
@@ -125,6 +128,7 @@ def process_video(
 
     def report(progress: int, message: str) -> None:
         nonlocal last_reported_progress
+        _raise_if_cancelled(cancel_callback)
         progress = max(0, min(int(progress), 100))
         if progress < last_reported_progress:
             progress = last_reported_progress
@@ -169,12 +173,14 @@ def process_video(
                         str(current_path),
                         str(upright_output_path),
                         progress_callback=stage_reporter(*motion_range),
+                        cancel_callback=cancel_callback,
                     )
                 else:
                     run_upright_adjustment(
                         str(current_path),
                         str(upright_output_path),
                         progress_callback=stage_reporter(*motion_range),
+                        cancel_callback=cancel_callback,
                     )
             except Exception as exc:
                 raise VideoProcessingError(f"Stabilization + upright processing failed: {exc}") from exc
@@ -190,6 +196,7 @@ def process_video(
                     str(current_path),
                     str(stabilized_output_path),
                     progress_callback=stage_reporter(*motion_range),
+                    cancel_callback=cancel_callback,
                 )
             except Exception as exc:
                 raise VideoProcessingError(f"Stabilization processing failed: {exc}") from exc
@@ -201,7 +208,11 @@ def process_video(
             superresolution_output_path = temp_path / "superresolution_output.mp4"
             try:
                 report(sr_range[0], "초해상도 처리를 시작했습니다.")
-                run_superresolution(str(current_path), str(superresolution_output_path))
+                run_superresolution(
+                    str(current_path),
+                    str(superresolution_output_path),
+                    cancel_callback=cancel_callback,
+                )
             except Exception as exc:
                 raise VideoProcessingError(f"Superresolution processing failed: {exc}") from exc
             current_path = superresolution_output_path
@@ -224,6 +235,7 @@ def process_video_file(
     file_name: str,
     output_path: str | Path,
     progress_callback: ProgressCallback | None = None,
+    cancel_callback: CancelCallback | None = None,
 ) -> ProcessingResult:
     """Process a video from disk and write the restored video to disk."""
     input_path = Path(input_path)
@@ -234,6 +246,7 @@ def process_video_file(
 
     def report(progress: int, message: str) -> None:
         nonlocal last_reported_progress
+        _raise_if_cancelled(cancel_callback)
         progress = max(0, min(int(progress), 100))
         if progress < last_reported_progress:
             progress = last_reported_progress
@@ -254,6 +267,7 @@ def process_video_file(
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         current_path = input_path
+        _raise_if_cancelled(cancel_callback)
 
         has_motion_stage = "Upright Correction" in features or "Stabilization" in features
         has_sr_stage = "Superresolution" in features
@@ -308,7 +322,11 @@ def process_video_file(
             superresolution_output_path = temp_path / "superresolution_output.mp4"
             try:
                 report(sr_range[0], "Starting superresolution processing.")
-                run_superresolution(str(current_path), str(superresolution_output_path))
+                run_superresolution(
+                    str(current_path),
+                    str(superresolution_output_path),
+                    cancel_callback=cancel_callback,
+                )
             except Exception as exc:
                 raise VideoProcessingError(f"Superresolution processing failed: {exc}") from exc
             current_path = superresolution_output_path
@@ -317,22 +335,33 @@ def process_video_file(
 
         try:
             report(96, "Preparing browser-playable video.")
-            current_path = _mux_original_audio(current_path, input_path, temp_path / "with_audio.mp4")
-            _write_browser_playable_file(current_path, output_path)
+            current_path = _mux_original_audio(
+                current_path,
+                input_path,
+                temp_path / "with_audio.mp4",
+                cancel_callback=cancel_callback,
+            )
+            _write_browser_playable_file(current_path, output_path, cancel_callback=cancel_callback)
         except VideoConversionError:
+            _raise_if_cancelled(cancel_callback)
             copyfile(current_path, output_path)
 
     return ProcessingResult(video_bytes=b"", option=option, file_name=output_name)
 
 
-def _write_browser_playable_file(input_path: Path, output_path: Path) -> None:
+def _write_browser_playable_file(
+    input_path: Path,
+    output_path: Path,
+    cancel_callback: CancelCallback | None = None,
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    _raise_if_cancelled(cancel_callback)
     if _is_browser_playable_mp4(input_path):
         copyfile(input_path, output_path)
         return
 
     try:
-        subprocess.run(
+        _run_cancellable_subprocess(
             [
                 str(_ffmpeg_executable()),
                 "-y",
@@ -346,8 +375,7 @@ def _write_browser_playable_file(input_path: Path, output_path: Path) -> None:
                 "+faststart",
                 str(output_path),
             ],
-            check=True,
-            capture_output=True,
+            cancel_callback=cancel_callback,
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise VideoConversionError("Browser-playable conversion failed.") from exc
@@ -396,12 +424,18 @@ def _has_audio_stream(path: Path) -> bool:
     return "audio" in probe.stdout.lower()
 
 
-def _mux_original_audio(processed_path: Path, original_path: Path, output_path: Path) -> Path:
+def _mux_original_audio(
+    processed_path: Path,
+    original_path: Path,
+    output_path: Path,
+    cancel_callback: CancelCallback | None = None,
+) -> Path:
+    _raise_if_cancelled(cancel_callback)
     if not _has_audio_stream(original_path):
         return processed_path
 
     try:
-        subprocess.run(
+        _run_cancellable_subprocess(
             [
                 str(_ffmpeg_executable()),
                 "-y",
@@ -422,10 +456,63 @@ def _mux_original_audio(processed_path: Path, original_path: Path, output_path: 
                 "+faststart",
                 str(output_path),
             ],
-            check=True,
-            capture_output=True,
+            cancel_callback=cancel_callback,
         )
     except (OSError, subprocess.CalledProcessError):
         return processed_path
 
     return output_path if output_path.exists() else processed_path
+
+
+def _run_cancellable_subprocess(
+    command: list[str],
+    cancel_callback: CancelCallback | None = None,
+) -> None:
+    if cancel_callback is None:
+        subprocess.run(command, check=True, capture_output=True)
+        return
+
+    import time
+
+    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags,
+    )
+    try:
+        while process.poll() is None:
+            if cancel_callback():
+                _terminate_process_tree(process)
+                raise RuntimeError("JobCancelled")
+            time.sleep(0.5)
+    finally:
+        if process.poll() is None:
+            _terminate_process_tree(process)
+
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(process.returncode, command)
+
+
+def _terminate_process_tree(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+
+
+def _raise_if_cancelled(cancel_callback: CancelCallback | None) -> None:
+    if cancel_callback is not None and cancel_callback():
+        raise RuntimeError("JobCancelled")

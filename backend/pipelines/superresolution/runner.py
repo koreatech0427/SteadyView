@@ -1,80 +1,141 @@
 import os
 import subprocess
-import sys
+import tempfile
+import time
 from pathlib import Path
 from shutil import which
+from typing import Callable
 
 
-DEFAULT_REAL_ESRGAN_DIRS = (
-    Path("/opt/real-esrgan"),
-    Path(r"C:\Users\korea\Desktop\Real-ESRGAN\Real-ESRGAN_V2"),
+DEFAULT_BASICVSRPP_DIRS = (
+    Path(r"C:\Users\korea\Desktop\BasicVSR++"),
+    Path("/opt/basicvsrpp"),
 )
+DEFAULT_BASICVSRPP_VENV_PYTHON = Path(r"C:\Users\korea\Desktop\BasicVSR++\.venv310\Scripts\python.exe")
 FFMPEG_FALLBACK = Path(r"C:\ffmpeg_SR\bin\ffmpeg.exe")
 FFPROBE_FALLBACK = Path(r"C:\ffmpeg_SR\bin\ffprobe.exe")
 
 
-def _default_real_esrgan_dir() -> Path:
-    for candidate in DEFAULT_REAL_ESRGAN_DIRS:
-        if (candidate / "inference_realesrgan_video.py").exists():
+def _default_basicvsrpp_dir() -> Path:
+    for candidate in DEFAULT_BASICVSRPP_DIRS:
+        if (candidate / "run_basicvsrpp_chunk.py").exists():
             return candidate
-    return DEFAULT_REAL_ESRGAN_DIRS[-1]
+    return DEFAULT_BASICVSRPP_DIRS[0]
 
 
-def run_superresolution(input_path: str, output_path: str) -> None:
-    """Run Real-ESRGAN video superresolution on a video file."""
-    real_esrgan_dir = Path(os.environ.get("STEADYVIEW_REAL_ESRGAN_DIR", _default_real_esrgan_dir()))
-    script_path = real_esrgan_dir / "inference_realesrgan_video.py"
+def run_superresolution(
+    input_path: str,
+    output_path: str,
+    cancel_callback: Callable[[], bool] | None = None,
+) -> None:
+    """Run BasicVSR++ video restoration on a video file."""
+    basicvsrpp_dir = Path(os.environ.get("STEADYVIEW_BASICVSRPP_DIR", _default_basicvsrpp_dir()))
+    script_path = basicvsrpp_dir / "run_basicvsrpp_chunk.py"
     if not script_path.exists():
         raise FileNotFoundError(
-            "Real-ESRGAN video script was not found. Mount it at /opt/real-esrgan, put it at "
-            f"{DEFAULT_REAL_ESRGAN_DIRS[-1]}, or set STEADYVIEW_REAL_ESRGAN_DIR."
+            "BasicVSR++ script was not found. Put it at "
+            f"{DEFAULT_BASICVSRPP_DIRS[0]}, mount it at /opt/basicvsrpp, or set STEADYVIEW_BASICVSRPP_DIR."
         )
 
+    python_path = _basicvsrpp_python(basicvsrpp_dir)
     target_path = Path(output_path)
-    output_dir = target_path.parent
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    input_stem = Path(input_path).stem
-    suffix = "steadyview_sr"
-    generated_path = output_dir / f"{input_stem}_{suffix}.mp4"
+    target_path.parent.mkdir(parents=True, exist_ok=True)
 
     command = [
-        sys.executable,
+        str(python_path),
         str(script_path),
-        "-i",
+        "--input",
         str(input_path),
-        "-o",
-        str(output_dir),
-        "-n",
-        os.environ.get("STEADYVIEW_SR_MODEL", "realesr-general-x4v3"),
-        "-s",
-        os.environ.get("STEADYVIEW_SR_OUTSCALE", "4"),
-        "-t",
-        os.environ.get("STEADYVIEW_SR_TILE", "0"),
-        "--suffix",
-        suffix,
-        "--crf",
-        os.environ.get("STEADYVIEW_SR_CRF", "16"),
-        "--preset",
-        os.environ.get("STEADYVIEW_SR_PRESET", "slow"),
-        "--no_compare",
+        "--output",
+        str(target_path),
+        "--chunk-size",
+        os.environ.get("STEADYVIEW_BASICVSRPP_CHUNK_SIZE", "8"),
+        "--model-name",
+        os.environ.get("STEADYVIEW_BASICVSRPP_MODEL", "real_basicvsr"),
     ]
 
+    _run_cancellable_command(command, basicvsrpp_dir, cancel_callback)
+
+    if not target_path.exists():
+        raise FileNotFoundError(f"BasicVSR++ output was not created: {target_path}")
+
+
+def _run_cancellable_command(
+    command: list[str],
+    cwd: Path,
+    cancel_callback: Callable[[], bool] | None,
+) -> None:
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+
+    with tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as output:
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=cwd,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                text=True,
+                creationflags=creationflags,
+            )
+        except OSError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+        try:
+            while process.poll() is None:
+                if cancel_callback is not None and cancel_callback():
+                    _terminate_process_tree(process)
+                    raise RuntimeError("JobCancelled")
+                time.sleep(0.5)
+        finally:
+            if process.poll() is None:
+                _terminate_process_tree(process)
+
+        if process.returncode != 0:
+            output.seek(0)
+            details = output.read().strip()
+            message = details[-2000:] if details else f"exit code {process.returncode}"
+            raise RuntimeError(message)
+
+
+def _terminate_process_tree(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return
+
+    process.terminate()
     try:
-        subprocess.run(command, cwd=real_esrgan_dir, check=True, capture_output=True, text=True)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        message = str(exc)
-        if isinstance(exc, subprocess.CalledProcessError):
-            details = (exc.stderr or exc.stdout or "").strip()
-            if details:
-                message = details[-2000:]
-        raise RuntimeError(f"Real-ESRGAN superresolution failed: {message}") from exc
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
 
-    if not generated_path.exists():
-        raise FileNotFoundError(f"Real-ESRGAN output was not created: {generated_path}")
 
-    original_width, original_height = _probe_video_size(Path(input_path))
-    _resize_to_original_resolution(generated_path, target_path, original_width, original_height)
+def _basicvsrpp_python(basicvsrpp_dir: Path) -> Path:
+    configured = os.environ.get("STEADYVIEW_BASICVSRPP_PYTHON")
+    if configured:
+        return Path(configured)
+
+    local_venv = basicvsrpp_dir / ".venv310" / "Scripts" / "python.exe"
+    if local_venv.exists():
+        return local_venv
+
+    if DEFAULT_BASICVSRPP_VENV_PYTHON.exists():
+        return DEFAULT_BASICVSRPP_VENV_PYTHON
+
+    executable = which("python")
+    if executable:
+        return Path(executable)
+
+    return Path("python")
 
 
 def _ffmpeg_executable() -> Path:
@@ -93,90 +154,3 @@ def _ffprobe_executable() -> Path:
     if FFPROBE_FALLBACK.exists():
         return FFPROBE_FALLBACK
     return Path("ffprobe")
-
-
-def _probe_video_size(path: Path) -> tuple[int, int]:
-    try:
-        probe = subprocess.run(
-            [
-                str(_ffprobe_executable()),
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=width,height",
-                "-of",
-                "csv=s=x:p=0",
-                str(path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise RuntimeError(f"Could not read original video resolution: {exc}") from exc
-
-    size = probe.stdout.strip()
-    try:
-        width_text, height_text = size.split("x", 1)
-        width = int(width_text)
-        height = int(height_text)
-    except ValueError as exc:
-        raise RuntimeError(f"Unexpected ffprobe resolution output: {size}") from exc
-
-    if width <= 0 or height <= 0:
-        raise RuntimeError(f"Invalid original video resolution: {width}x{height}")
-
-    return width, height
-
-
-def _resize_to_original_resolution(
-    generated_path: Path,
-    target_path: Path,
-    width: int,
-    height: int,
-) -> None:
-    try:
-        subprocess.run(
-            [
-                str(_ffmpeg_executable()),
-                "-y",
-                "-i",
-                str(generated_path),
-                "-map",
-                "0:v:0",
-                "-map",
-                "0:a?",
-                "-vf",
-                f"scale={width}:{height}:flags=lanczos",
-                "-c:v",
-                "libx264",
-                "-crf",
-                os.environ.get("STEADYVIEW_SR_FINAL_CRF", os.environ.get("STEADYVIEW_SR_CRF", "16")),
-                "-preset",
-                os.environ.get("STEADYVIEW_SR_FINAL_PRESET", os.environ.get("STEADYVIEW_SR_PRESET", "slow")),
-                "-pix_fmt",
-                "yuv420p",
-                "-c:a",
-                "copy",
-                "-movflags",
-                "+faststart",
-                str(target_path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (OSError, subprocess.CalledProcessError) as exc:
-        message = str(exc)
-        if isinstance(exc, subprocess.CalledProcessError):
-            details = (exc.stderr or exc.stdout or "").strip()
-            if details:
-                message = details[-2000:]
-        raise RuntimeError(f"Could not resize superresolution output to original resolution: {message}") from exc
-
-    if not target_path.exists():
-        raise FileNotFoundError(f"Final superresolution output was not created: {target_path}")
-
-    generated_path.unlink(missing_ok=True)

@@ -67,8 +67,14 @@ def run_upright_adjustment(
     crop_eval_scale=CROP_EVAL_SCALE,
     crop_border_margin=CROP_BORDER_MARGIN,
     progress_callback=None,
+    cancel_callback=None,
 ):
+    def check_cancel():
+        if cancel_callback is not None and cancel_callback():
+            raise RuntimeError("JobCancelled")
+
     def report(progress, message):
+        check_cancel()
         if progress_callback is not None:
             progress_callback(int(progress), message)
 
@@ -77,6 +83,7 @@ def run_upright_adjustment(
     report(1, 'Preparing upright model.')
 
     model = load_upright_model(model_path, device)
+    check_cancel()
     transform = build_transform()
     report(5, 'Upright model loaded.')
 
@@ -86,6 +93,7 @@ def run_upright_adjustment(
         transform,
         device,
         progress_callback=lambda percent, message: report(5 + round(percent * 0.55), message),
+        cancel_callback=cancel_callback,
     )
 
     n_frames = len(theta_os)
@@ -99,6 +107,7 @@ def run_upright_adjustment(
 
     report(62, 'Optimizing upright angle path.')
     final_thetas = optimize_video_angles(theta_os, sigmas_sq, phis, lam=lam)
+    check_cancel()
     output_thetas = truncate_angles(final_thetas, tau=tau)
 
     if ENABLE_FINAL_ANGLE_SMOOTHING:
@@ -119,6 +128,7 @@ def run_upright_adjustment(
         crop_border_margin=crop_border_margin,
         crop_progress_callback=lambda percent, message: report(70 + round(percent * 0.10), message),
         render_progress_callback=lambda percent, message: report(80 + round(percent * 0.20), message),
+        cancel_callback=cancel_callback,
     )
 
     corrections = np.abs(output_thetas)
@@ -130,7 +140,12 @@ def run_upright_adjustment(
     report(100, 'Upright correction completed.')
 
 
-def analyze_angles(video_path, model, transform, device, progress_callback=None):
+def analyze_angles(video_path, model, transform, device, progress_callback=None, cancel_callback=None):
+    def check_cancel():
+        if cancel_callback is not None and cancel_callback():
+            raise RuntimeError("JobCancelled")
+
+    check_cancel()
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise FileNotFoundError(f'Cannot open video: {video_path}')
@@ -148,6 +163,7 @@ def analyze_angles(video_path, model, transform, device, progress_callback=None)
     processed = 0
 
     for frame_idx in tqdm(range(total), desc='upright optical-flow analysis', unit='frame'):
+        check_cancel()
         ret, frame = cap.read()
         if not ret:
             break
@@ -361,7 +377,12 @@ def compute_rotation_source_map(angle_deg, src_w, src_h, out_width, out_height,
 
 def compute_auto_crop_box(angles, width, height, sample_step=CROP_SAMPLE_STEP,
                           erode_iter=CROP_ERODE_ITER, eval_scale=CROP_EVAL_SCALE,
-                          border_margin=CROP_BORDER_MARGIN, progress_callback=None):
+                          border_margin=CROP_BORDER_MARGIN, progress_callback=None, cancel_callback=None):
+    def check_cancel():
+        if cancel_callback is not None and cancel_callback():
+            raise RuntimeError("JobCancelled")
+
+    check_cancel()
     eval_w = max(128, int(round(width * eval_scale)))
     eval_h = max(128, int(round(height * eval_scale)))
     common_valid = np.ones((eval_h, eval_w), dtype=bool)
@@ -377,6 +398,7 @@ def compute_auto_crop_box(angles, width, height, sample_step=CROP_SAMPLE_STEP,
 
     total_samples = len(frame_indices)
     for sample_index, t in enumerate(tqdm(frame_indices, desc='upright auto-crop', unit='frame'), start=1):
+        check_cancel()
         map_x, map_y = compute_rotation_source_map(
             angles[t],
             width,
@@ -520,7 +542,12 @@ def crop_frame_by_box(frame, crop_box):
 def render_upright_video(video_path, output_path, angles, info, auto_crop=True,
                          crop_sample_step=CROP_SAMPLE_STEP, crop_erode_iter=CROP_ERODE_ITER,
                          crop_eval_scale=CROP_EVAL_SCALE, crop_border_margin=CROP_BORDER_MARGIN,
-                         crop_progress_callback=None, render_progress_callback=None):
+                         crop_progress_callback=None, render_progress_callback=None, cancel_callback=None):
+    def check_cancel():
+        if cancel_callback is not None and cancel_callback():
+            raise RuntimeError("JobCancelled")
+
+    check_cancel()
     width = int(info['width'])
     height = int(info['height'])
     fps = float(info['fps'])
@@ -536,6 +563,7 @@ def render_upright_video(video_path, output_path, angles, info, auto_crop=True,
             eval_scale=crop_eval_scale,
             border_margin=crop_border_margin,
             progress_callback=crop_progress_callback,
+            cancel_callback=cancel_callback,
         )
     else:
         ratio = crop_border_margin if crop_border_margin > 0 else 0.12
@@ -558,6 +586,7 @@ def render_upright_video(video_path, output_path, angles, info, auto_crop=True,
 
     try:
         for frame_idx in tqdm(range(n_frames), desc='upright render', unit='frame'):
+            check_cancel()
             ret, frame = cap.read()
             if not ret:
                 break

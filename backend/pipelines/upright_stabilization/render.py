@@ -56,7 +56,12 @@ def compute_joint_source_map(rot_h, joint_camera_t, joint_stable_t, out_width, o
 
 def compute_auto_crop_box(rot_mats, joint_camera_path, joint_stable_path, video_info,
                           sample_step=1, erode_iter=5, eval_scale=0.5, border_margin=0.02,
-                          progress_callback=None):
+                          progress_callback=None, cancel_callback=None):
+    def check_cancel():
+        if cancel_callback is not None and cancel_callback():
+            raise RuntimeError("JobCancelled")
+
+    check_cancel()
     h, w = video_info['height'], video_info['width']
     eval_w = max(128, int(round(w * eval_scale)))
     eval_h = max(128, int(round(h * eval_scale)))
@@ -76,6 +81,7 @@ def compute_auto_crop_box(rot_mats, joint_camera_path, joint_stable_path, video_
 
     total_samples = len(frame_indices)
     for sample_index, t in enumerate(tqdm(frame_indices, desc='auto-crop mask', unit='frame'), start=1):
+        check_cancel()
         map_x, map_y = compute_joint_source_map(
             rot_mats[t], joint_camera_path[t], joint_stable_path[t],
             out_width=eval_w, out_height=eval_h,
@@ -170,7 +176,12 @@ def fit_crop_box_to_aspect(x1, x2, y1, y2, target_width, target_height):
 def render_joint_video(video_path, output_path, rot_mats, joint_camera_path, joint_stable_path,
                        video_info, auto_crop=True, crop_sample_step=1, crop_erode_iter=5,
                        crop_eval_scale=0.5, crop_border_margin=0.02,
-                       crop_progress_callback=None, render_progress_callback=None):
+                       crop_progress_callback=None, render_progress_callback=None, cancel_callback=None):
+    def check_cancel():
+        if cancel_callback is not None and cancel_callback():
+            raise RuntimeError("JobCancelled")
+
+    check_cancel()
     h, w = video_info['height'], video_info['width']
     fps = video_info['fps']
     n_frames = joint_camera_path.shape[0]
@@ -183,6 +194,7 @@ def render_joint_video(video_path, output_path, rot_mats, joint_camera_path, joi
             eval_scale=crop_eval_scale,
             border_margin=crop_border_margin,
             progress_callback=crop_progress_callback,
+            cancel_callback=cancel_callback,
         )
     else:
         ratio = crop_border_margin if crop_border_margin > 0 else 0.12
@@ -201,6 +213,7 @@ def render_joint_video(video_path, output_path, rot_mats, joint_camera_path, joi
     print(f'[Crop] render crop size: {crop_w}x{crop_h}')
 
     for t in tqdm(range(n_frames), desc='joint render', unit='frame'):
+        check_cancel()
         ret, frame = cap.read()
         if not ret:
             break

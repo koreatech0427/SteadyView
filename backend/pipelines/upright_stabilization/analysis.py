@@ -73,7 +73,12 @@ def make_loftr_tensor(frame_bgr, new_w, new_h, device):
     return tensor.unsqueeze(0).unsqueeze(0).to(device)
 
 
-def analyze_video_shared(video_path, model, transform, device, mesh_size, demand, progress_callback=None):
+def analyze_video_shared(video_path, model, transform, device, mesh_size, demand, progress_callback=None, cancel_callback=None):
+    def check_cancel():
+        if cancel_callback is not None and cancel_callback():
+            raise RuntimeError("JobCancelled")
+
+    check_cancel()
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise FileNotFoundError(f'Cannot open video: {video_path}')
@@ -110,6 +115,7 @@ def analyze_video_shared(video_path, model, transform, device, mesh_size, demand
 
     processed_pairs = 0
     while True:
+        check_cancel()
         ret, frame = cap.read()
         if not ret:
             break

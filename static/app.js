@@ -38,7 +38,8 @@ let comparePlaying = false;
 let syncingComparison = false;
 let cancelRequested = false;
 
-const CHUNKED_UPLOAD_THRESHOLD = 128 * 1024 * 1024;
+// Cloudflare 경유 시 한 번에 큰 파일을 보내면 막힐 수 있어서 64MiB부터 분할 업로드를 사용한다.
+const CHUNKED_UPLOAD_THRESHOLD = 64 * 1024 * 1024;
 const UPLOAD_CHUNK_SIZE = 16 * 1024 * 1024;
 const featureOrder = ["Superresolution", "Stabilization", "Upright Correction"];
 /*
@@ -156,7 +157,7 @@ async function createChunkedJob(file, option) {
   initForm.append("file_size", String(file.size));
   initForm.append("total_chunks", String(totalChunks));
 
-  updateProgress(0, `대용량 영상 업로드 준비 중... 0/${totalChunks}`);
+  updateProgress(0, `영상 업로드 준비 중... 0/${totalChunks}`);
   const initResponse = await fetch("/api/uploads", {
     method: "POST",
     body: initForm,
@@ -174,7 +175,7 @@ async function createChunkedJob(file, option) {
     chunkForm.append("chunk", file.slice(start, end), `${file.name}.part${index}`);
 
     const uploadPercent = Math.max(1, Math.round(((index + 1) / totalChunks) * 5));
-    updateProgress(uploadPercent, `대용량 영상 업로드 중... ${index + 1}/${totalChunks}`);
+    updateProgress(uploadPercent, `영상 업로드 중... ${index + 1}/${totalChunks}`);
     const chunkResponse = await fetch(`/api/uploads/${upload.id}/chunks`, {
       method: "POST",
       body: chunkForm,

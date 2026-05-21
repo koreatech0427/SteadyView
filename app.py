@@ -347,7 +347,14 @@ def _run_job(job_id: str, input_path: Path, option: str, file_name: str) -> None
         result_path = JOBS_DIR / job_id / "output.mp4"
         if _is_cancel_requested(job_id):
             raise JobCancelled("JobCancelled")
-        result = process_video_file(input_path, option, file_name, result_path, progress_callback=report)
+        result = process_video_file(
+            input_path,
+            option,
+            file_name,
+            result_path,
+            progress_callback=report,
+            cancel_callback=lambda: _is_cancel_requested(job_id),
+        )
         if _is_cancel_requested(job_id):
             raise JobCancelled("JobCancelled")
         _update_job(
@@ -411,7 +418,7 @@ def _get_upload_or_404(upload_id: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail="업로드 세션을 찾을 수 없습니다.")
 
     try:
-        return json.loads(status_path.read_text(encoding="utf-8"))
+        return json.loads(status_path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="업로드 상태 파일을 읽을 수 없습니다.") from exc
 
@@ -439,7 +446,7 @@ def _get_job_or_404(job_id: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
 
     try:
-        job = json.loads(status_path.read_text(encoding="utf-8"))
+        job = json.loads(status_path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="작업 상태 파일을 읽을 수 없습니다.") from exc
 
@@ -458,7 +465,7 @@ def _is_cancel_requested(job_id: str) -> bool:
     if not status_path.exists():
         return False
     try:
-        job = json.loads(status_path.read_text(encoding="utf-8"))
+        job = json.loads(status_path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError:
         return False
     return bool(job.get("cancel_requested"))

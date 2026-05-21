@@ -20,7 +20,12 @@ def _get_loftr_matcher(device):
     return matcher
 
 
-def get_tracks(video_path, mesh_size, demand, n_frames, progress_callback=None):
+def get_tracks(video_path, mesh_size, demand, n_frames, progress_callback=None, cancel_callback=None):
+    def check_cancel():
+        if cancel_callback is not None and cancel_callback():
+            raise RuntimeError("JobCancelled")
+
+    check_cancel()
     cap = cv2.VideoCapture(video_path)
     ret, first_frame = cap.read()
     if not ret: return None, "영상 로드 실패"
@@ -51,6 +56,7 @@ def get_tracks(video_path, mesh_size, demand, n_frames, progress_callback=None):
     all_matched_pairs = []
 
     for i in range(1, n_frames):
+        check_cancel()
         ret, frame = cap.read()
         if not ret: break
 

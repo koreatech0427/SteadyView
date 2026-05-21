@@ -18,7 +18,13 @@ def render_combined_video(
     crop_ratio=0.12,
     alpha=0.04,
     progress_callback=None,
+    cancel_callback=None,
 ):
+    def check_cancel():
+        if cancel_callback is not None and cancel_callback():
+            raise RuntimeError("JobCancelled")
+
+    check_cancel()
     cap = cv2.VideoCapture(video_path)
     n_frames, mesh_rows, mesh_cols, _, _ = camera_path.shape
     h, w = info["height"], info["width"]
@@ -33,6 +39,7 @@ def render_combined_video(
     min_right, min_bottom = w, h
 
     for frame_idx in range(n_frames):
+        check_cancel()
         corners = [
             (0, 0, 0, 0),
             (w, 0, mesh_cols - 1, 0),
@@ -71,6 +78,7 @@ def render_combined_video(
 
     print("[Render] Final rendering started. (Stabilization mode)")
     for frame_idx in range(n_frames):
+        check_cancel()
         ret, frame = cap.read()
         if not ret:
             break

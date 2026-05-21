@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+from typing import Callable
 
 
 PIPELINE_DIR = Path(__file__).resolve().parent
@@ -35,7 +36,12 @@ def _drop_foreign_modules() -> None:
             sys.modules.pop(module_name, None)
 
 
-def run_upright_stabilization(input_path: str, output_path: str, progress_callback=None) -> None:
+def run_upright_stabilization(
+    input_path: str,
+    output_path: str,
+    progress_callback=None,
+    cancel_callback: Callable[[], bool] | None = None,
+) -> None:
     """Run the Stabilization + Upright pipeline on a video file."""
     model_path = Path(os.environ.get("STEADYVIEW_UPRIGHT_MODEL_PATH", DEFAULT_MODEL_PATH))
     if not model_path.exists():
@@ -58,10 +64,16 @@ def run_upright_stabilization(input_path: str, output_path: str, progress_callba
         model_path=str(model_path),
         output_path=output_path,
         progress_callback=progress_callback,
+        cancel_callback=cancel_callback,
     )
 
 
-def run_upright_adjustment(input_path: str, output_path: str, progress_callback=None) -> None:
+def run_upright_adjustment(
+    input_path: str,
+    output_path: str,
+    progress_callback=None,
+    cancel_callback: Callable[[], bool] | None = None,
+) -> None:
     """Run upright-only correction using optical-flow temporal smoothing."""
     model_path = Path(os.environ.get("STEADYVIEW_UPRIGHT_MODEL_PATH", DEFAULT_MODEL_PATH))
     if not model_path.exists():
@@ -84,4 +96,5 @@ def run_upright_adjustment(input_path: str, output_path: str, progress_callback=
         model_path=str(model_path),
         output_path=output_path,
         progress_callback=progress_callback,
+        cancel_callback=cancel_callback,
     )
